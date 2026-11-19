@@ -1,0 +1,31 @@
+# Common dependencies. Versions were not pinned during the thesis; see each sub-project for specifics.
+numpy
+scipy
+pandas
+scikit-learn
+matplotlib
+seaborn
+tabulate
+jupyter
+joblib
+
+# distnet/, continuous_optimization/ (TensorFlow/Keras based DistNet)
+tensorflow
+keras
+ConfigSpace
+asf-lib
+
+# bayes_distnet/ (PyTorch)
+torch
+
+# xgboostlss_experiments/ (see third_party/xgboostlss/pyproject.toml for tested versions)
+xgboost
+pyro-ppl
+optuna
+properscoring
+plotnine
+shap
+tqdm
+
+# SLURM cluster launchers (optional)
+submitit

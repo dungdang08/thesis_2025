@@ -1,0 +1,28 @@
+
+
+Scenario: clasp_factoring
+runtimes: (2000, 100), features: (2000, 113)
+
+
+Scenario: saps-CVVAR
+runtimes: (10011, 100), features: (10011, 54)
+
+
+Scenario: spear_qcp
+runtimes: (8072, 100), features: (8072, 100)
+
+
+Scenario: yalsat_qcp
+runtimes: (11743, 100), features: (11743, 100)
+
+
+Scenario: spear_swgcp
+runtimes: (11182, 100), features: (11182, 100)
+
+
+Scenario: yalsat_swgcp
+runtimes: (11182, 100), features: (11182, 100)
+
+
+Scenario: lpg-zeno
+runtimes: (3999, 100), features: (3999, 305)

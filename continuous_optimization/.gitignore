@@ -1,0 +1,13 @@
+__pycache__/
+.ipynb_checkpoints/
+.vscode/
+data/
+
+*.log
+*.pkl
+*.pt
+*.svg
+*.zip
+*.tar.gz
+*.csv
+*.png

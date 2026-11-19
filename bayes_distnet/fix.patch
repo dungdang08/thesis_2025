@@ -1,0 +1,186 @@
+diff --git a/src/create_dataframes.py b/src/create_dataframes.py
+index a9948b4..76d2170 100755
+--- a/src/create_dataframes.py
++++ b/src/create_dataframes.py
+@@ -4,6 +4,7 @@ Date: May 10, 2020
+ Description: Create combined df metrics from all runs. This can take a while to complete.
+ """
+ 
++import os
+ import numpy as np
+ import pandas as pd
+ import pickle
+@@ -166,6 +167,7 @@ def getMass(model_params, fold_runtimes, dist, net_type):
+ 
+ 
+ def saveRuntimeDF(file_name, df):
++    os.makedirs('../export/dfs', exist_ok=True)
+     df.to_pickle('../export/dfs/' + file_name + '.pkl')
+ 
+ 
+diff --git a/src/layers/BBBLinear2.py b/src/layers/BBBLinear2.py
+new file mode 100644
+index 0000000..ba04f86
+--- /dev/null
++++ b/src/layers/BBBLinear2.py
+@@ -0,0 +1,102 @@
++"""
++File: BBBLinear.py
++Date: April 4, 2020
++Description: Bayesian Linear Layer Implementation
++Source: Taken from https://github.com/kumar-shridhar/PyTorch-BayesianCNN
++"""
++
++import torch
++import torch.nn.functional as F
++from torch.nn import Parameter
++
++import numpy as np
++
++from layers.misc import ModuleWrapper
++from train.metrics import calculate_kl
++
++import sys
++sys.path.append("..")
++
++import helper.device as device
++
++
++class BBBLinear2(ModuleWrapper):
++
++    def __init__(self, in_features, out_features, model_config, bias=False, name='BBBLinear'):
++        super(BBBLinear2, self).__init__()
++        self.in_features = in_features
++        self.out_features = out_features
++        self.use_bias = bias
++        self.name = name
++
++        self.prior_mu = 0.0
++        self.prior_sigma = 0.1
++        self.prior_sigma1 = model_config['prior_sigma1']
++        self.prior_sigma2 = model_config['prior_sigma2']
++        self.pi = model_config['mixture_pi']
++
++        self.W_mu = Parameter(torch.Tensor(out_features, in_features))
++        self.W_rho = Parameter(torch.Tensor(out_features, in_features))
++
++        if self.use_bias:
++            self.bias_mu = Parameter(torch.Tensor(out_features))
++            self.bias_rho = Parameter(torch.Tensor(out_features))
++        else:
++            self.register_parameter('bias_mu', None)
++            self.register_parameter('bias_rho', None)
++        self.posterior_mu1 = model_config['posterior_mu1']
++        self.posterior_mu2 = model_config['posterior_mu2']
++        self.posterior_sigma1 = model_config['posterior_sigma1']
++        self.posterior_sigma2 = model_config['posterior_sigma2']
++
++        self.reset_parameters()
++
++    def reset_parameters(self):
++        self.W_mu.data.normal_(self.posterior_mu1, self.posterior_mu2)
++        self.W_rho.data.normal_(self.posterior_sigma1, self.posterior_sigma2)
++
++        if self.use_bias:
++            self.bias_mu.data.normal_(self.posterior_mu1, self.posterior_mu2)
++            self.bias_rho.data.normal_(self.posterior_sigma1, self.posterior_sigma2)
++
++    def gaussian_prior(self, x, mu, sigma):
++        PI = 3.1415926535897
++        scaling = 1.0 / np.sqrt(2.0 * PI * (sigma ** 2))
++        bell = torch.exp(- (x - mu) ** 2 / (2.0 * sigma ** 2))
++        return scaling * bell
++
++    def gaussian(self, x, mu, sigma):
++        PI = 3.1415926535897
++        scaling = 1.0 / torch.sqrt(2.0 * PI * (sigma ** 2))
++        bell = torch.exp(- (x - mu) ** 2 / (2.0 * sigma ** 2))
++        return scaling * bell
++
++    def log_prior_sum(self, x):
++        first_gaussian = self.pi * self.gaussian_prior(x, self.prior_mu, self.prior_sigma1)
++        second_gaussian = (1 - self.pi) * self.gaussian_prior(x, self.prior_mu, self.prior_sigma2)
++        return torch.log(first_gaussian + second_gaussian).sum()
++
++    def log_variational_sum(self, x):
++        return torch.log(self.gaussian(x, self.W_mu, self.W_sigma)).sum()
++
++    def forward(self, x):
++        self.W_sigma = torch.log1p(torch.exp(self.W_rho))
++        if self.use_bias:
++            self.bias_sigma = torch.log1p(torch.exp(self.bias_rho))
++            bias_var = self.bias_sigma ** 2
++        else:
++            self.bias_sigma = bias_var = None
++
++        act_mu = F.linear(x, self.W_mu, self.bias_mu)
++        act_var = 1e-16 + F.linear(x ** 2, self.W_sigma ** 2, bias_var)
++        act_std = torch.sqrt(act_var)
++
++        eps = torch.empty(act_mu.size()).normal_(0, 1).to(device.device)
++        return act_mu + act_std * eps
++
++    def kl_loss(self):
++        W_eps = torch.empty(self.W_mu.size()).normal_(0, 1).to(device.device)
++        self.W_sigma = torch.log1p(torch.exp(self.W_rho))
++        self.weights = self.W_mu + W_eps * self.W_sigma
++        kl = self.log_variational_sum(self.weights) - self.log_prior_sum(self.weights)
++        return kl
+diff --git a/src/models/bayes_distnet.py b/src/models/bayes_distnet.py
+index bab8400..b42f3f7 100644
+--- a/src/models/bayes_distnet.py
++++ b/src/models/bayes_distnet.py
+@@ -9,7 +9,7 @@ import torch.nn as nn
+ 
+ # Module
+ from layers.misc import ModuleWrapper
+-from layers.BBBLinear import BBBLinear
++from layers.BBBLinear2 import BBBLinear2
+ from config.config_handler import getModelConfig
+ 
+ 
+@@ -28,11 +28,11 @@ class BayesDistNetFCN(ModuleWrapper):
+         self.output_size       = config['output_size']
+         self.drop_value        = config['drop_value']
+ 
+-        # # Layer 1
++        # Layer 1
+         in_channel = num_features
+         out_channel = self.n_fcdepth
+         self.layer1 = nn.Sequential(
+-            BBBLinear(in_channel, out_channel, config, bias=True, name='fc1'),
++            BBBLinear2(in_channel, out_channel, config, name='fc1'),
+             nn.BatchNorm1d(out_channel),
+             nn.Softplus(),
+         )
+@@ -41,7 +41,7 @@ class BayesDistNetFCN(ModuleWrapper):
+         in_channel = out_channel
+         out_channel = self.n_fcdepth
+         self.layer2 = nn.Sequential(
+-            BBBLinear(in_channel, out_channel, config, bias=True, name='fc2'),
++            BBBLinear2(in_channel, out_channel, config, name='fc2'),
+             nn.BatchNorm1d(out_channel),
+             nn.Softplus(),
+         )
+@@ -50,7 +50,7 @@ class BayesDistNetFCN(ModuleWrapper):
+         in_channel = out_channel
+         out_channel = self.output_size
+         self.layer_end = nn.Sequential(
+-            BBBLinear(in_channel, out_channel, config, bias=True, name='fc3'),
++            BBBLinear2(in_channel, out_channel, config, name='fc3'),
+             # nn.BatchNorm1d(out_channel),
+             nn.Softplus()
+         )
+diff --git a/src/train/train.py b/src/train/train.py
+index 334183f..ce5ee62 100755
+--- a/src/train/train.py
++++ b/src/train/train.py
+@@ -179,7 +179,7 @@ def train(num_features, net_type, train_loader, validation_loader, X_test, model
+ 
+     total_len = len(train_loader) * training_config['batch_size']
+     counter = 1
+-    valid_loss_min = np.Inf
++    valid_loss_min = np.inf
+     valid_loss_counter = 0
+     for epoch in range(n_epochs):
+         # Next epoch for training
